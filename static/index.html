@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LandScan</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; color: #1f2937; background: #f8fafc; display: flex; height: 100vh; overflow: hidden; }
+    #sidebar { width: 420px; background: #fff; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; overflow-y: auto; padding: 20px; gap: 14px; }
+    #map { flex: 1; height: 100vh; }
+    h1 { font-size: 22px; font-weight: 700; }
+    .sub { font-size: 13px; color: #64748b; margin-top: 2px; }
+    .banner { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; padding: 8px 10px; border-radius: 6px; font-size: 12.5px; display: none; }
+    .tabs { display: flex; border-bottom: 1px solid #e2e8f0; }
+    .tab { flex: 1; text-align: center; padding: 9px; font-size: 13.5px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; color: #64748b; background: none; border-top: none; border-left: none; border-right: none; }
+    .tab.active { color: #0f172a; border-bottom-color: #0f172a; }
+    .panel { display: none; flex-direction: column; gap: 12px; }
+    .panel.active { display: flex; }
+    .hint { font-size: 13px; color: #475569; line-height: 1.45; }
+    input, select, button.btn { width: 100%; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13.5px; }
+    button.btn { background: #0f172a; color: #fff; font-weight: 600; border: none; cursor: pointer; }
+    button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.btn.secondary { background: #f1f5f9; color: #0f172a; border: 1px solid #cbd5e1; }
+    .score-box { padding: 12px; border-radius: 8px; background: #f8fafc; border: 1px solid #e2e8f0; }
+    .verdict { font-size: 18px; font-weight: 700; }
+    .LOW { color: #1b7f3b; }
+    .MEDIUM { color: #b26a00; }
+    .HIGH { color: #b3261e; }
+    .flag { padding: 9px 11px; border-radius: 6px; border-left: 4px solid #64748b; background: #f8fafc; font-size: 12.5px; margin-top: 6px; }
+    .flag.high { border-left-color: #b3261e; background: #fef2f2; }
+    .flag.medium { border-left-color: #b26a00; background: #fffbeb; }
+    .flag.info { border-left-color: #37474f; background: #f1f5f9; }
+    .flag b { display: block; margin-bottom: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 6px; }
+    th, td { border: 1px solid #e2e8f0; padding: 4px 6px; text-align: center; }
+    th { background: #f1f5f9; font-weight: 600; }
+    .section-title { font-size: 13px; font-weight: 700; margin-top: 8px; color: #334155; }
+    .counts { font-size: 12.5px; color: #334155; display: flex; flex-direction: column; gap: 4px; }
+    .count-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f1f5f9; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <div>
+      <h1>LandScan</h1>
+      <div class="sub">Land due diligence from AlphaEarth satellite embeddings</div>
+    </div>
+    <div id="demo-banner" class="banner">Running on DEMO data (Earth Engine not configured).</div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('check')">Check a plot</button>
+      <button class="tab" onclick="switchTab('teach')">Teach the AI</button>
+    </div>
+
+    <div id="panel-check" class="panel active">
+      <div class="hint" id="check-hint">Click the map to drop a pin on the plot.</div>
+      <input id="plot-label" type="text" placeholder="Optional plot name / survey no. (for PDF)" />
+      <div id="report-out"></div>
+    </div>
+
+    <div id="panel-teach" class="panel">
+      <div class="hint">Click a spot you know, pick what it is, and save. 2 or more per class turns on lookalike risk.</div>
+      <select id="label-class"></select>
+      <button id="save-label-btn" class="btn" onclick="saveLabel()" disabled>Save labeled spot at pin</button>
+      <div id="label-msg" class="hint"></div>
+      <div class="section-title">Labeled spots per class</div>
+      <div id="label-counts" class="counts"></div>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([17.385, 78.4867], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    let pin = null;
+    let curLat = null, curLon = null;
+    let activeTab = 'check';
+    const labelMarkers = L.layerGroup().addTo(map);
+
+    function switchTab(t) {
+      activeTab = t;
+      document.querySelectorAll('.tab').forEach((el, i) => {
+        el.classList.toggle('active', (t === 'check' && i === 0) || (t === 'teach' && i === 1));
+      });
+      document.getElementById('panel-check').classList.toggle('active', t === 'check');
+      document.getElementById('panel-teach').classList.toggle('active', t === 'teach');
+    }
+
+    map.on('click', async (e) => {
+      curLat = e.latlng.lat;
+      curLon = e.latlng.lng;
+      if (pin) pin.setLatLng(e.latlng);
+      else pin = L.marker(e.latlng).addTo(map);
+      document.getElementById('save-label-btn').disabled = false;
+      if (activeTab === 'check') {
+        await runReport(curLat, curLon);
+      }
+    });
+
+    async function runReport(lat, lon) {
+      const out = document.getElementById('report-out');
+      out.innerHTML = '<div class="hint">Analyzing satellite history (2017–2024)...</div>';
+      try {
+        const res = await fetch(`/api/report?lat=${lat}&lon=${lon}`);
+        if (!res.ok) throw new Error(await res.text());
+        const r = await res.json();
+        if (r.demo) document.getElementById('demo-banner').style.display = 'block';
+        renderReport(r);
+      } catch (err) {
+        out.innerHTML = `<div class="flag high"><b>Error</b>${err.message}</div>`;
+      }
+    }
+
+    function renderReport(r) {
+      const out = document.getElementById('report-out');
+      const flagsHtml = r.flags.map(f =>
+        `<div class="flag ${f.level}"><b>${f.level.toUpperCase()}: ${f.title}</b>${f.detail}</div>`
+      ).join('');
+
+      const yrs = r.timeline.map(t => `<th>${t.year}</th>`).join('');
+      const covs = r.timeline.map(t => `<td>${t.cover}</td>`).join('');
+
+      const periods = r.steps.map(s => `<th>${s.from}-${String(s.to).slice(2)}</th>`).join('');
+      const changes = r.steps.map(s => `<td>${s.change === null ? '-' : s.change.toFixed(2)}${s.big ? '*' : ''}</td>`).join('');
+
+      let lookHtml = '';
+      if (r.lookalike && r.lookalike.scores) {
+        const sc = Object.entries(r.lookalike.scores).map(([k, v]) => `${k}: ${(v * 100).toFixed(0)}%`).join(' · ');
+        lookHtml = `<div class="section-title">Lookalike similarity</div><div class="hint">${sc}</div>`;
+      }
+
+      const lbl = encodeURIComponent(document.getElementById('plot-label').value || '');
+      const pdfUrl = `/api/report.pdf?lat=${r.lat}&lon=${r.lon}&label=${lbl}`;
+
+      out.innerHTML = `
+        <div class="score-box">
+          <div class="verdict ${r.verdict}">Screening risk: ${r.verdict} (${r.risk}/100)</div>
+          <div class="sub">Lat ${r.lat.toFixed(5)}, Lon ${r.lon.toFixed(5)} · Area growth: <b>${r.growth}</b></div>
+        </div>
+        <div>${flagsHtml}</div>
+        <div class="section-title">Land cover (2017–2024)</div>
+        <table><tr>${yrs}</tr><tr>${covs}</tr></table>
+        <div class="section-title">Year-over-year embedding change</div>
+        <table><tr>${periods}</tr><tr>${changes}</tr></table>
+        ${lookHtml}
+        <a href="${pdfUrl}" target="_blank" style="text-decoration:none; margin-top:8px; display:block;">
+          <button class="btn secondary" type="button">Download 1-page PDF report</button>
+        </a>
+      `;
+    }
+
+    async function loadLabels() {
+      const res = await fetch('/api/labels');
+      const d = await res.json();
+      if (!d.ee) document.getElementById('demo-banner').style.display = 'block';
+      const sel = document.getElementById('label-class');
+      sel.innerHTML = Object.entries(d.classes).map(([k, name]) =>
+        `<option value="${k}">${name}</option>`
+      ).join('');
+      renderCounts(d.counts, d.classes);
+      labelMarkers.clearLayers();
+      (d.points || []).forEach(p => {
+        L.circleMarker([p.lat, p.lon], { radius: 5, color: '#0f172a' })
+          .bindPopup(`${p.label} (${p.lat.toFixed(4)}, ${p.lon.toFixed(4)})`)
+          .addTo(labelMarkers);
+      });
+    }
+
+    function renderCounts(counts, classes) {
+      const el = document.getElementById('label-counts');
+      el.innerHTML = Object.entries(counts).map(([k, c]) =>
+        `<div class="count-row"><span>${classes ? classes[k] : k}</span><b>${c}</b></div>`
+      ).join('');
+    }
+
+    async function saveLabel() {
+      if (curLat === null) return;
+      const cls = document.getElementById('label-class').value;
+      const msg = document.getElementById('label-msg');
+      msg.textContent = 'Saving labeled spot...';
+      try {
+        const res = await fetch('/api/label', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: curLat, lon: curLon, label: cls })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        msg.textContent = `Saved (${cls}) at ${curLat.toFixed(4)}, ${curLon.toFixed(4)}.`;
+        await loadLabels();
+      } catch (e) {
+        msg.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    loadLabels();
+  </script>
+</body>
+</html>
