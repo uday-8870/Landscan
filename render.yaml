@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: landscan
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: EE_PROJECT
+        value: landscan-513009
+      - key: EE_SERVICE_ACCOUNT_JSON
+        sync: false

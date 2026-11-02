@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LandScan</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+<style>
+  :root { --bg:#0f1418; --panel:#171e24; --line:#26313a; --txt:#e6edf3; --mut:#8b9aa7;
+          --hi:#ff6b5e; --med:#f0b04a; --lo:#4cc38a; --acc:#5aa9ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--txt); display:flex; height:100vh; }
+  #wrap { flex:1; position:relative; min-width:0; }
+  #map { position:absolute; inset:0; }
+  #search { position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:1000; width:min(420px, 60%); }
+  #q { width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--txt); font-size:14px; }
+  #sres { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-top:4px; overflow:hidden; display:none; }
+  #sres div { padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--line); font-size:13px; }
+  #sres div:last-child { border-bottom:0; } #sres div:hover { background:#1f2a33; }
+  #side { width:390px; max-width:45vw; background:var(--panel); border-left:1px solid var(--line); overflow:auto; padding:16px; }
+  h1 { font-size:18px; margin:0 0 2px; }
+  .mut { color:var(--mut); font-size:12px; }
+  .tabs { display:flex; gap:6px; margin:12px 0; }
+  .tabs button { flex:1; padding:8px; background:transparent; color:var(--txt); border:1px solid var(--line); border-radius:8px; cursor:pointer; }
+  .tabs button.on { background:var(--acc); color:#06121f; border-color:var(--acc); font-weight:600; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:12px; margin:10px 0; }
+  .verdict { font-size:22px; font-weight:700; }
+  .HIGH{color:var(--hi)} .MEDIUM{color:var(--med)} .LOW{color:var(--lo)}
+  .flag { border-left:3px solid var(--mut); padding:6px 10px; margin:8px 0; background:#1b242b; border-radius:0 8px 8px 0; }
+  .flag.high{border-color:var(--hi)} .flag.medium{border-color:var(--med)} .flag.info{border-color:var(--acc)}
+  .flag b { display:block; }
+  .tl { display:grid; grid-template-columns:repeat(8,1fr); gap:3px; font-size:10px; text-align:center; }
+  .tl div { background:#1b242b; border-radius:4px; padding:4px 1px; }
+  .tl .big { outline:1px solid var(--med); }
+  button.act, label.act { display:block; width:100%; padding:10px; margin-top:8px; border-radius:8px; border:0; background:var(--acc); color:#06121f; font-weight:600; cursor:pointer; text-align:center; }
+  button.ghost, label.ghost { background:transparent; color:var(--txt); border:1px solid var(--line); }
+  select, input[type=text] { width:100%; padding:8px; border-radius:8px; background:#1b242b; color:var(--txt); border:1px solid var(--line); }
+  input[type=range] { width:100%; }
+  .banner { background:#3a2a12; border:1px solid var(--med); color:#ffd9a0; padding:8px 10px; border-radius:8px; margin:8px 0; font-size:12px; }
+  table.ev { width:100%; border-collapse:collapse; font-size:12px; }
+  table.ev td { padding:4px 2px; border-bottom:1px solid var(--line); vertical-align:top; } table.ev td:last-child { text-align:right; }
+  .lrow { display:flex; align-items:center; gap:6px; padding:6px 0; border-bottom:1px solid var(--line); font-size:12px; }
+  .lrow:last-child { border-bottom:0; }
+  .dot { width:10px; height:10px; border-radius:50%; flex:none; }
+  .lrow .loc { flex:1; cursor:pointer; color:var(--mut); min-width:0; }
+  .lrow select { width:auto; padding:3px; font-size:11px; }
+  .lrow button { background:transparent; border:1px solid var(--line); color:var(--hi); border-radius:6px; cursor:pointer; padding:2px 7px; }
+  @media (max-width:760px) { body{flex-direction:column} #side{width:100%;max-width:none;height:50vh;border-left:0;border-top:1px solid var(--line)} #wrap{flex:none;height:50vh} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="map"></div>
+  <div id="search"><input id="q" placeholder="Search place, address, or paste lat, lon" autocomplete="off"><div id="sres"></div></div>
+</div>
+<div id="side">
+  <h1>LandScan</h1>
+  <div class="mut">Land due diligence from AlphaEarth satellite embeddings</div>
+  <div class="tabs"><button id="t1" class="on">Check a plot</button><button id="t2">Teach the AI</button></div>
+
+  <div id="p1">
+    <div class="mut">Click the map for a pin, use the draw tool (top left of map) to outline the exact plot, or upload a KML / GeoJSON boundary.</div>
+    <div class="card" id="rad">
+      <div class="mut">Pin radius: <b id="rv">100</b> m</div>
+      <input type="range" id="rs" min="30" max="300" step="10" value="100">
+      <label class="act ghost" for="up">Upload KML / GeoJSON boundary</label>
+      <input type="file" id="up" accept=".kml,.geojson,.json,.xml" style="display:none">
+    </div>
+    <div id="out"></div>
+  </div>
+
+  <div id="p2" style="display:none">
+    <div class="mut">Click a spot you know, pick what it is, and save. Use 10+ per class. Only label what you are sure about.</div>
+    <div class="card">
+      <select id="lab"></select>
+      <button class="act" id="save">Save labeled spot at pin</button>
+      <div id="msg" class="mut" style="margin-top:8px"></div>
+    </div>
+    <div class="card" id="metrics"></div>
+    <div class="card" id="list"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const COL = { lake_bed:'#3b82f6', encroachment:'#ef4444', unapproved_layout:'#f59e0b', clean:'#22c55e', hotspot:'#a855f7' };
+const fmt = (v, u = '', n = 0) => v == null ? 'n/a' : v.toFixed(n) + u;
+
+// ---------- map + basemaps ----------
+const map = L.map('map', { zoomControl: true }).setView([17.385, 78.4867], 11);
+const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery Esri' });
+const places = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' });
+sat.addTo(map); places.addTo(map);
+L.control.layers({ 'Satellite': sat, 'Streets': osm }, { 'Place labels': places }, { position: 'topright' }).addTo(map);
+map.addControl(new L.Control.Draw({ edit: false, draw: { polygon: { allowIntersection: false, showArea: false },
+  rectangle: true, polyline: false, circle: false, marker: false, circlemarker: false } }));
+
+const dots = L.layerGroup().addTo(map);
+let plot = null, shape = null, teachPin = null, radius = 100, seq = 0;
+const inCheck = () => $('p1').style.display !== 'none';
+
+function clearShape() { if (shape) { map.removeLayer(shape); shape = null; } }
+function setCircle(ll) {
+  plot = { type: 'circle', lat: ll.lat, lon: ll.lng };
+  clearShape(); shape = L.circle(ll, { radius, color: '#ff6b5e', weight: 2, fillOpacity: .15 }).addTo(map);
+}
+function setPoly(ring) {  // ring: [[lon, lat], ...]
+  plot = { type: 'poly', ring };
+  clearShape(); shape = L.polygon(ring.map(([x, y]) => [y, x]), { color: '#ff6b5e', weight: 2, fillOpacity: .15 }).addTo(map);
+}
+
+map.on('click', e => {
+  if (inCheck()) { setCircle(e.latlng); run(); }
+  else { if (teachPin) teachPin.setLatLng(e.latlng); else teachPin = L.marker(e.latlng).addTo(map); }
+});
+map.on(L.Draw.Event.CREATED, e => {
+  const ring = e.layer.getLatLngs()[0].map(p => [p.lng, p.lat]);
+  tab(1); setPoly(ring); run();
+});
+
+// ---------- search (Nominatim) ----------
+let st;
+$('q').addEventListener('input', () => { clearTimeout(st); st = setTimeout(doSearch, 500); });
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(st); doSearch(); } });
+document.addEventListener('click', e => { if (!$('search').contains(e.target)) $('sres').style.display = 'none'; });
+
+function goTo(lat, lon) {
+  map.setView([lat, lon], 17); $('sres').style.display = 'none';
+  if (inCheck()) { setCircle(L.latLng(lat, lon)); run(); }
+  else { const ll = L.latLng(lat, lon); if (teachPin) teachPin.setLatLng(ll); else teachPin = L.marker(ll).addTo(map); }
+}
+async function doSearch() {
+  const q = $('q').value.trim(); if (q.length < 3) return;
+  const m = q.match(/^(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)$/);
+  if (m && Math.abs(+m[1]) <= 90 && Math.abs(+m[2]) <= 180) return goTo(+m[1], +m[2]);
+  const box = $('sres');
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=' + encodeURIComponent(q));
+    const d = await r.json();
+    box.innerHTML = d.length ? '' : '<div class="mut">No results</div>';
+    d.forEach(x => { const el = document.createElement('div'); el.textContent = x.display_name;
+      el.onclick = () => goTo(+x.lat, +x.lon); box.appendChild(el); });
+  } catch (e) { box.innerHTML = '<div class="mut">Search unavailable</div>'; }
+  box.style.display = 'block';
+}
+
+// ---------- boundary upload (KML / GeoJSON) ----------
+function firstRing(g) {
+  if (!g) return null;
+  if (g.type === 'FeatureCollection') { for (const f of g.features) { const r = firstRing(f); if (r) return r; } return null; }
+  if (g.type === 'Feature') return firstRing(g.geometry);
+  if (g.type === 'GeometryCollection') { for (const x of g.geometries) { const r = firstRing(x); if (r) return r; } return null; }
+  if (g.type === 'Polygon') return g.coordinates[0].map(p => [p[0], p[1]]);
+  if (g.type === 'MultiPolygon') return g.coordinates[0][0].map(p => [p[0], p[1]]);
+  return null;
+}
+function kmlRing(text) {
+  const doc = new DOMParser().parseFromString(text, 'text/xml');
+  const poly = doc.getElementsByTagName('Polygon')[0];
+  const c = (poly || doc).getElementsByTagName('coordinates')[0];
+  if (!c) return null;
+  return c.textContent.trim().split(/\s+/).map(t => t.split(',').slice(0, 2).map(Number)).filter(p => p.length === 2 && !p.some(isNaN));
+}
+$('up').onchange = async ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  try {
+    const text = await f.text();
+    const ring = /^\s*[{[]/.test(text) ? firstRing(JSON.parse(text)) : kmlRing(text);
+    if (!ring || ring.length < 3) throw new Error('No polygon found in file');
+    setPoly(ring); map.fitBounds(shape.getBounds(), { maxZoom: 18 }); run();
+  } catch (e) { $('out').innerHTML = `<div class="banner">Could not read boundary: ${esc(e.message)}</div>`; }
+  ev.target.value = '';
+};
+
+// ---------- radius ----------
+let rt;
+$('rs').oninput = () => {
+  radius = +$('rs').value; $('rv').textContent = radius;
+  if (plot && plot.type === 'circle') { shape.setRadius(radius); clearTimeout(rt); rt = setTimeout(run, 600); }
+};
+
+// ---------- tabs ----------
+function tab(n) {
+  $('p1').style.display = n === 1 ? '' : 'none'; $('p2').style.display = n === 2 ? '' : 'none';
+  $('t1').className = n === 1 ? 'on' : ''; $('t2').className = n === 2 ? 'on' : '';
+  if (n === 2) loadLabels();
+  else { dots.clearLayers(); if (teachPin) { map.removeLayer(teachPin); teachPin = null; } }
+}
+$('t1').onclick = () => tab(1); $('t2').onclick = () => tab(2);
+
+// ---------- report ----------
+async function run() {
+  if (!plot) return;
+  const me = ++seq;
+  $('out').innerHTML = '<div class="card mut">Reading satellite embeddings...</div>';
+  const body = plot.type === 'circle' ? { lat: plot.lat, lon: plot.lon, radius } : { polygon: plot.ring };
+  try {
+    const r = await fetch('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (me !== seq) return;
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'Invalid plot');
+    render(d);
+  } catch (e) { if (me === seq) $('out').innerHTML = `<div class="banner">Error: ${esc(e.message)}</div>`; }
+}
+
+function render(d) {
+  const flags = d.flags.map(f => `<div class="flag ${esc(f.level)}"><b>${esc(f.title)}</b>${esc(f.detail)}</div>`).join('');
+  const tl = d.timeline.map((t, i) => {
+    const s = d.steps[i - 1];
+    return `<div class="${s && s.big ? 'big' : ''}">${t.year}<br>${esc(t.cover)}</div>`;
+  }).join('');
+  const e = d.evidence || {}, w = e.water || {}, sar = e.sar;
+  const rows = [
+    ['Plot size', `${Math.round(d.area_m2).toLocaleString()} m² (${d.area_acres.toFixed(2)} acre)`],
+    ['Water seen on plot / 30 m / 300 m', `${fmt(w.on, '%')} / ${fmt(w.m30, '%')} / ${fmt(w.m300, '%')}`],
+    ['Height above drainage (HAND)', fmt(e.hand, ' m', 1)],
+    ['Radar wet share monsoon / dry', sar ? `${fmt(sar.mon == null ? null : sar.mon * 100, '%')} / ${fmt(sar.dry == null ? null : sar.dry * 100, '%')}` : 'n/a'],
+    ['Slope', fmt(e.slope, '°', 1)],
+  ].map(([a, b]) => `<tr><td>${a}</td><td>${esc(b)}</td></tr>`).join('');
+  $('out').innerHTML = `
+    ${d.demo ? '<div class="banner">DEMO DATA. Earth Engine is not connected, so these numbers are fake.</div>' : ''}
+    <div class="card">
+      <div class="verdict ${esc(d.verdict)}">${esc(d.verdict)} risk (${d.risk}/100)</div>
+      <div class="mut">Area growth: ${esc(d.growth)}</div>
+    </div>
+    <div>${flags}</div>
+    <div class="card"><div class="mut" style="margin-bottom:6px">Evidence</div><table class="ev">${rows}</table></div>
+    <div class="card"><div class="mut" style="margin-bottom:6px">Land cover by year (outlined = big change)</div><div class="tl">${tl}</div></div>
+    <input type="text" id="plabel" placeholder="Plot name for the PDF (optional)">
+    <button class="act" id="dl">Download PDF report</button>`;
+  $('dl').onclick = () => window.open(`/api/report.pdf?rid=${encodeURIComponent(d.rid)}&label=${encodeURIComponent($('plabel').value)}`);
+}
+
+// ---------- teach the AI ----------
+let classes = {};
+async function api(path, opts) {
+  const r = await fetch(path, opts); const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'Request failed');
+  return d;
+}
+async function loadLabels() {
+  const d = await api('/api/labels'); classes = d.classes;
+  $('lab').innerHTML = Object.entries(classes).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
+  dots.clearLayers();
+  d.points.forEach(p => L.circleMarker([p.lat, p.lon], { radius: 6, color: COL[p.label] || '#fff', fillOpacity: .8 }).addTo(dots));
+  const opts = sel => Object.entries(classes).map(([k]) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(k)}</option>`).join('');
+  $('list').innerHTML = `<b>Labeled spots (${d.points.length})</b>` + (d.ee ? '' : '<div class="banner">Earth Engine not connected: labels use demo data.</div>') +
+    d.points.slice().reverse().map(p => `<div class="lrow"><span class="dot" style="background:${COL[p.label] || '#fff'}"></span>
+      <span class="loc" data-lat="${p.lat}" data-lon="${p.lon}">${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}</span>
+      <select data-id="${p.id}">${opts(p.label)}</select><button data-del="${p.id}" title="Delete">×</button></div>`).join('');
+  $('list').querySelectorAll('.loc').forEach(el => el.onclick = () => map.setView([+el.dataset.lat, +el.dataset.lon], 17));
+  $('list').querySelectorAll('select').forEach(el => el.onchange = async () => {
+    try { await api('/api/label/' + el.dataset.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: el.value }) }); }
+    catch (e) { $('msg').textContent = e.message; } loadLabels(); });
+  $('list').querySelectorAll('[data-del]').forEach(el => el.onclick = async () => {
+    try { await api('/api/label/' + el.dataset.del, { method: 'DELETE' }); } catch (e) { $('msg').textContent = e.message; } loadLabels(); });
+  loadMetrics(d.stale);
+}
+async function loadMetrics(stale) {
+  const m = await api('/api/model-metrics');
+  const per = Object.entries(m.per_class).map(([k, v]) => `${esc(k)}: ${v.n} spots, recall ${v.recall == null ? 'n/a' : Math.round(v.recall * 100) + '%'}`).join('<br>');
+  $('metrics').innerHTML = `<b>Model check (leave one out)</b><br>` + (m.accuracy == null
+    ? '<span class="mut">Label at least 6 spots (3 in two classes) to see accuracy.</span>'
+    : `<div class="verdict ${m.accuracy >= .75 ? 'LOW' : m.accuracy >= .55 ? 'MEDIUM' : 'HIGH'}">${Math.round(m.accuracy * 100)}% correct</div>
+       <div class="mut">${m.evaluated} spots tested. ${m.ready ? '' : 'Too few to trust yet, aim for 30+. '}Flag threshold ${m.thresholds.sim} (${m.thresholds.calibrated ? 'calibrated' : 'default'})</div>
+       <div class="mut" style="margin-top:6px">${per}</div>`) +
+    (stale ? `<div class="banner">${stale} spots were saved with an older recipe.</div><button class="act" id="rx">Reindex labels</button>` : '');
+  if (stale) $('rx').onclick = async () => { $('rx').textContent = 'Reindexing...'; try { await api('/api/reindex', { method: 'POST' }); } catch (e) { $('msg').textContent = e.message; } loadLabels(); };
+}
+$('save').onclick = async () => {
+  if (!teachPin) { $('msg').textContent = 'Click the map first.'; return; }
+  $('msg').textContent = 'Saving...';
+  const ll = teachPin.getLatLng();
+  try {
+    await api('/api/label', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat: ll.lat, lon: ll.lng, label: $('lab').value }) });
+    $('msg').textContent = 'Saved.';
+  } catch (e) { $('msg').textContent = e.message; }
+  loadLabels();
+};
+</script>
+</body>
+</html>
